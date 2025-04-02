@@ -1,0 +1,74 @@
+import os
+import logging
+from flask import Flask, request, jsonify
+import moviepy.editor as mp
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# 配置日志记录
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'mp4', 'avi', 'mov'}
+
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    files = request.files.getlist('media')
+    description = request.form.get('description')
+    file_paths = []
+
+    for file in files:
+        if file and allowed_file(file.filename):
+            if file.content_length > MAX_FILE_SIZE:
+                return jsonify({'error': f'文件 {file.filename} 大小超过 10MB'}), 400
+            try:
+                # 使用 secure_filename 确保文件名安全
+                secure_name = secure_filename(file.filename)
+                file_path = os.path.join(UPLOAD_FOLDER, secure_name)
+                file.save(file_path)
+                file_paths.append(file_path)
+            except Exception as e:
+                logging.error(f'保存文件 {file.filename} 时出错: {e}')
+                return jsonify({'error': f'保存文件 {file.filename} 时出错'}), 500
+        else:
+            return jsonify({'error': f'文件 {file.filename} 类型不支持'}), 400
+
+    # 筛选出视频文件
+    video_paths = [path for path in file_paths if path.lower().endswith(('.mp4', '.avi', '.mov'))]
+    if not video_paths:
+        return jsonify({'error': '未找到有效的视频文件'}), 400
+
+    video_clips = []
+    for path in video_paths:
+        try:
+            clip = mp.VideoFileClip(path)
+            video_clips.append(clip)
+        except Exception as e:
+            logging.error(f'加载视频文件 {path} 时出错: {e}')
+            return jsonify({'error': f'加载视频文件 {path} 时出错'}), 500
+
+    try:
+        final_clip = mp.concatenate_videoclips(video_clips, method="compose")
+        output_path = os.path.join(UPLOAD_FOLDER, 'output_video.mp4')
+        final_clip.write_videofile(output_path)
+        for clip in video_clips:
+            clip.close()
+        video_url = f'/uploads/output_video.mp4'
+        return jsonify({'video_url': video_url})
+    except Exception as e:
+        logging.error(f'生成视频时出错: {e}')
+        return jsonify({'error': '生成视频时出错，请稍后重试'}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
+    
